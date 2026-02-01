@@ -1,96 +1,82 @@
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { Settings as SettingsIcon, Send, AlertCircle, ArrowLeft } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
 import {
   View,
-  Text,
-  StyleSheet,
   TextInput,
   TouchableOpacity,
+  Text,
   FlatList,
+  StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Send, ArrowLeft } from 'lucide-react-native';
+import { ref, onValue } from 'firebase/database';
+import Firebase from '@/firebase';
 import { useApp } from '@/contexts/AppContext';
+import { Message } from '@/types';
 import { theme } from '@/constants/theme';
-import { filterMessage } from '@/utils/messageFilter';
-import type { Message } from '@/types';
 
 export default function ChatScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams();
-  const { getChatById, canSendMessage } = useApp();
-  const [messageText, setMessageText] = useState<string>('');
-  
-  const chatId = params.chatId as string;
-  const chat = getChatById(chatId);
-  const messages = chat?.messages || [];
-  const partnerName = chat?.partnerName || '';
+  const { chatId } = useLocalSearchParams<{ chatId: string }>();
+  const { sendMessage, user } = useApp();
+
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [text, setText] = useState('');
+  const listRef = useRef<FlatList>(null);
 
   useEffect(() => {
-    if (!chat) {
-      router.replace('/chats');
-    }
-  }, [chat, router]);
+    const msgRef = ref(Firebase.db, `messages/${chatId}`);
 
-  const handleSend = () => {
-    if (!messageText.trim()) {
-      return;
-    }
+    return onValue(msgRef, (snap) => {
+      const data = snap.val();
+      if (!data) return setMessages([]);
 
-    const sendCheck = canSendMessage();
-    if (!sendCheck.allowed) {
-      Alert.alert('לא ניתן לשלוח', sendCheck.reason);
-      return;
-    }
+      const list = Object.values(data).sort(
+        (a: any, b: any) => a.timestamp - b.timestamp
+      ) as Message[];
 
-    const filtered = filterMessage(messageText.trim());
-    
-    router.push({
-      pathname: '/approval',
-      params: {
-        chatId: chatId,
-        originalText: messageText.trim(),
-        filteredText: filtered.filteredText,
-        wasFiltered: filtered.wasFiltered ? 'true' : 'false',
-      },
+      setMessages(list);
+
+      setTimeout(() => {
+        listRef.current?.scrollToEnd({ animated: true });
+      }, 100);
     });
-    
-    setMessageText('');
+  }, [chatId]);
+
+  const handleSend = async () => {
+    if (!text.trim()) return;
+
+    const message: Message = {
+      id: Date.now().toString(),
+      senderUid: user!.uid,
+      originalText: text.trim(),
+      filteredText: text.trim(),
+      wasFiltered: false,
+      timestamp: Date.now(),
+    };
+
+    await sendMessage(chatId as string, message);
+    setText('');
   };
 
-  const renderMessage = ({ item }: { item: Message }) => {
-    const isFromMe = item.isFromMe;
-    
+  const renderItem = ({ item }: { item: Message }) => {
+    const isMe = item.senderUid === user?.uid;
+
     return (
       <View
         style={[
           styles.messageContainer,
-          isFromMe ? styles.messageContainerMe : styles.messageContainerOther,
+          isMe ? styles.meContainer : styles.otherContainer,
         ]}
       >
-        <View
-          style={[
-            styles.messageBubble,
-            isFromMe ? styles.messageBubbleMe : styles.messageBubbleOther,
-          ]}
-        >
-          <Text
-            style={[
-              styles.messageText,
-              isFromMe ? styles.messageTextMe : styles.messageTextOther,
-            ]}
-          >
+        <View style={[styles.bubble, isMe ? styles.meBubble : styles.otherBubble]}>
+          <Text style={[styles.messageText, isMe && styles.meText]}>
             {item.filteredText}
           </Text>
-          <Text
-            style={[
-              styles.messageTime,
-              isFromMe ? styles.messageTimeMe : styles.messageTimeOther,
-            ]}
-          >
+          <Text style={styles.time}>
             {new Date(item.timestamp).toLocaleTimeString('he-IL', {
               hour: '2-digit',
               minute: '2-digit',
@@ -103,64 +89,42 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
+        <TouchableOpacity onPress={() => router.replace("/chats")}>
           <ArrowLeft size={24} color={theme.colors.text} />
         </TouchableOpacity>
-        <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>{partnerName || 'צ\'אט'}</Text>
-          <Text style={styles.headerSubtitle}>תקשורת מכבדת</Text>
-        </View>
-        <TouchableOpacity
-          style={styles.settingsButton}
-          onPress={() => router.push('/settings')}
-        >
-          <SettingsIcon size={24} color={theme.colors.text} />
-        </TouchableOpacity>
+        <Text style={styles.headerTitle}>שיחה</Text>
+        <View style={{ width: 24 }} />
       </View>
 
-      {messages.length === 0 ? (
-        <View style={styles.emptyState}>
-          <AlertCircle size={48} color={theme.colors.textLight} />
-          <Text style={styles.emptyStateTitle}>עדיין אין הודעות</Text>
-          <Text style={styles.emptyStateText}>
-            כתבו את ההודעה הראשונה שלכם{'\n'}
-            והאפליקציה תוודא שהיא מכבדת ועניינית
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          data={messages}
-          renderItem={renderMessage}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.messagesList}
-          inverted
-        />
-      )}
+      {/* Messages */}
+      <FlatList
+        ref={listRef}
+        data={messages}
+        keyExtractor={(item) => item.id}
+        renderItem={renderItem}
+        contentContainerStyle={styles.messagesList}
+      />
 
+      {/* Input */}
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.inputContainer}>
+        <View style={styles.inputRow}>
           <TextInput
             style={styles.input}
             placeholder="כתבו הודעה..."
-            value={messageText}
-            onChangeText={setMessageText}
+            value={text}
+            onChangeText={setText}
             multiline
-            maxLength={500}
-            placeholderTextColor={theme.colors.textLight}
           />
           <TouchableOpacity
-            style={[styles.sendButton, !messageText.trim() && styles.sendButtonDisabled]}
+            style={[styles.sendButton, !text.trim() && styles.disabled]}
             onPress={handleSend}
-            disabled={!messageText.trim()}
+            disabled={!text.trim()}
           >
-            <Send size={20} color={theme.colors.surface} />
+            <Send size={20} color="#fff" />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -173,117 +137,92 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+
   header: {
+    height: 60,
+    backgroundColor: theme.colors.surface,
+    borderBottomWidth: 1,
+    borderColor: theme.colors.border,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: theme.spacing.md,
-    backgroundColor: theme.colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  backButton: {
-    padding: theme.spacing.sm,
-  },
-  settingsButton: {
-    padding: theme.spacing.sm,
-  },
-  headerContent: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  headerTitle: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: 'bold' as const,
-    color: theme.colors.text,
-  },
-  headerSubtitle: {
-    fontSize: theme.fontSize.xs,
-    color: theme.colors.textLight,
-    marginTop: 2,
+    paddingHorizontal: 16,
   },
 
-  emptyState: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: theme.spacing.xl,
-  },
-  emptyStateTitle: {
-    fontSize: theme.fontSize.xl,
-    fontWeight: 'bold' as const,
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
     color: theme.colors.text,
-    marginTop: theme.spacing.md,
-    marginBottom: theme.spacing.sm,
   },
-  emptyStateText: {
-    fontSize: theme.fontSize.md,
-    color: theme.colors.textLight,
-    textAlign: 'center',
-    lineHeight: 22,
-  },
+
   messagesList: {
-    padding: theme.spacing.md,
-    flexDirection: 'column-reverse',
+    padding: 12,
   },
+
   messageContainer: {
-    marginBottom: theme.spacing.md,
+    marginVertical: 6,
     maxWidth: '80%',
   },
-  messageContainerMe: {
+
+  meContainer: {
     alignSelf: 'flex-start',
   },
-  messageContainerOther: {
+
+  otherContainer: {
     alignSelf: 'flex-end',
   },
-  messageBubble: {
-    borderRadius: theme.borderRadius.md,
-    padding: theme.spacing.md,
+
+  bubble: {
+    borderRadius: 16,
+    padding: 12,
   },
-  messageBubbleMe: {
-    backgroundColor: theme.colors.sent,
+
+  meBubble: {
+    backgroundColor: theme.colors.primary,
   },
-  messageBubbleOther: {
-    backgroundColor: theme.colors.received,
+
+  otherBubble: {
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
+
   messageText: {
-    fontSize: theme.fontSize.md,
-    lineHeight: 20,
-    marginBottom: theme.spacing.xs,
-  },
-  messageTextMe: {
-    color: theme.colors.surface,
-  },
-  messageTextOther: {
+    fontSize: 15,
     color: theme.colors.text,
+    marginBottom: 4,
   },
-  messageTime: {
-    fontSize: theme.fontSize.xs,
+
+  meText: {
+    color: '#fff',
   },
-  messageTimeMe: {
-    color: 'rgba(255, 255, 255, 0.7)',
+
+  time: {
+    fontSize: 11,
+    opacity: 0.6,
+    textAlign: 'left',
   },
-  messageTimeOther: {
-    color: theme.colors.textLight,
-  },
-  inputContainer: {
+
+  inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    padding: theme.spacing.md,
-    backgroundColor: theme.colors.surface,
+    padding: 10,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-    gap: theme.spacing.sm,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    gap: 8,
   },
+
   input: {
     flex: 1,
     backgroundColor: theme.colors.background,
-    borderRadius: theme.borderRadius.md,
-    padding: theme.spacing.md,
-    fontSize: theme.fontSize.md,
-    color: theme.colors.text,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    fontSize: 15,
     maxHeight: 100,
   },
+
   sendButton: {
     backgroundColor: theme.colors.primary,
     width: 44,
@@ -292,7 +231,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendButtonDisabled: {
-    backgroundColor: theme.colors.border,
+
+  disabled: {
+    opacity: 0.4,
   },
 });

@@ -1,199 +1,135 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import createContextHook from '@nkzw/create-context-hook';
-import { useQuery, useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import type { Message, Settings, Chat } from '@/types';
+import { onAuthStateChanged } from 'firebase/auth';
+import { ref, onValue, push, set, serverTimestamp, get } from 'firebase/database';
+import Firebase from '../firebase';
+import type { UserChat, Message, Settings } from '@/types';
 
-const STORAGE_KEYS = {
-  CHATS: 'chats',
-  SETTINGS: 'settings',
-  ONBOARDING_DONE: 'onboardingDone',
-} as const;
-
-const DEFAULT_SETTINGS: Settings = {
-  quietMode: false,
-  maxMessagesPerDay: 10,
-  currentMessageCount: 0,
-  lastResetDate: new Date().toDateString(),
-};
-
-const generateInviteCode = (): string => {
-  return 'xxxx-xxxx-xxxx'.replace(/x/g, () => {
-    return Math.floor(Math.random() * 16).toString(16).toUpperCase();
-  });
+export type User = {
+  uid: string;
+  email: string;
 };
 
 export const [AppProvider, useApp] = createContextHook(() => {
-  const [chats, setChats] = useState<Chat[]>([]);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [onboardingDone, setOnboardingDone] = useState<boolean>(false);
-
-  const chatsQuery = useQuery({
-    queryKey: ['chats'],
-    queryFn: async () => {
-      const stored = await AsyncStorage.getItem(STORAGE_KEYS.CHATS);
-      return stored ? JSON.parse(stored) : [];
-    },
+  const [user, setUser] = useState<User | null>(null);
+  const [loading,setLoading] = useState(true)
+  const [loggedin, setLoggedIn] = useState(false);
+  const [chats, setChats] = useState<UserChat[]>([]); // ✅ IMPORTANT
+  const [settings, setSettings] = useState<Settings>({
+    quietMode: false,
+    maxMessagesPerDay: 10,
+    currentMessageCount: 0,
+    lastResetDate: new Date().toDateString(),
   });
 
-  const settingsQuery = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => {
-      const stored = await AsyncStorage.getItem(STORAGE_KEYS.SETTINGS);
-      return stored ? JSON.parse(stored) : DEFAULT_SETTINGS;
-    },
-  });
-
-  const onboardingQuery = useQuery({
-    queryKey: ['onboarding'],
-    queryFn: async () => {
-      const stored = await AsyncStorage.getItem(STORAGE_KEYS.ONBOARDING_DONE);
-      return stored === 'true';
-    },
-  });
-
+  // 🔐 Auth
   useEffect(() => {
-    if (chatsQuery.data) setChats(chatsQuery.data);
-  }, [chatsQuery.data]);
-
-  useEffect(() => {
-    if (settingsQuery.data) setSettings(settingsQuery.data);
-  }, [settingsQuery.data]);
-
-  useEffect(() => {
-    if (onboardingQuery.data !== undefined) setOnboardingDone(onboardingQuery.data);
-  }, [onboardingQuery.data]);
-
-  const saveChatsMutation = useMutation({
-    mutationFn: async (newChats: Chat[]) => {
-      await AsyncStorage.setItem(STORAGE_KEYS.CHATS, JSON.stringify(newChats));
-      return newChats;
-    },
-  });
-
-  const saveSettingsMutation = useMutation({
-    mutationFn: async (newSettings: Settings) => {
-      await AsyncStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(newSettings));
-      return newSettings;
-    },
-  });
-
-  const completeOnboardingMutation = useMutation({
-    mutationFn: async () => {
-      await AsyncStorage.setItem(STORAGE_KEYS.ONBOARDING_DONE, 'true');
-      return true;
-    },
-  });
-
-  const createChat = (partnerName: string): Chat => {
-    const newChat: Chat = {
-      id: Date.now().toString(),
-      partnerName,
-      inviteCode: generateInviteCode(),
-      createdAt: Date.now(),
-      messages: [],
-    };
-
-    const updatedChats = [...chats, newChat];
-    setChats(updatedChats);
-    saveChatsMutation.mutate(updatedChats);
-    return newChat;
-  };
-
-  const joinChat = (inviteCode: string, myName: string): Chat | null => {
-    const existingChat = chats.find(c => c.inviteCode.toUpperCase() === inviteCode.toUpperCase());
-    if (existingChat) {
-      return existingChat;
-    }
-
-    const newChat: Chat = {
-      id: Date.now().toString(),
-      partnerName: myName,
-      inviteCode: inviteCode.toUpperCase(),
-      createdAt: Date.now(),
-      messages: [],
-    };
-
-    const updatedChats = [...chats, newChat];
-    setChats(updatedChats);
-    saveChatsMutation.mutate(updatedChats);
-    return newChat;
-  };
-
-  const addMessage = (chatId: string, message: Message) => {
-    const today = new Date().toDateString();
-    let updatedSettings = { ...settings };
-    
-    if (settings.lastResetDate !== today) {
-      updatedSettings = {
-        ...settings,
-        currentMessageCount: 1,
-        lastResetDate: today,
-      };
-    } else {
-      updatedSettings = {
-        ...settings,
-        currentMessageCount: settings.currentMessageCount + 1,
-      };
-    }
-
-    const updatedChats = chats.map(chat => {
-      if (chat.id === chatId) {
-        return {
-          ...chat,
-          messages: [...chat.messages, message],
-        };
+    return onAuthStateChanged(Firebase.auth, (a) => {
+      setLoading(false)
+      if (!a) {
+        setUser(null);
+        setLoggedIn(false);
+        return;
       }
-      return chat;
+
+      setUser({ uid: a.uid, email: a.email ?? '' });
+      setLoggedIn(true);
+    });
+  }, []);
+
+  // 💬 Listen ONLY to userChats (what Chats screen needs)
+  useEffect(() => {
+    if (!user) return;
+
+    const userChatsRef = ref(Firebase.db, `userChats/${user.uid}`);
+
+    return onValue(userChatsRef, (snap) => {
+      const data = snap.val();
+      if (!data) {
+        setChats([]);
+        return;
+      }
+
+      const list: UserChat[] = Object.values(data);
+      setChats(list);
+    });
+  }, [user]);
+
+  // 🆕 Join chat by UID
+  const joinChat = async (partnerUid: string) => {
+    if (!user) throw new Error('Not logged in');
+
+    const chatId = [user.uid, partnerUid].sort().join('_');
+
+    // check if chat exists
+    const chatSnap = await get(ref(Firebase.db, `chats/${chatId}`));
+    if (!chatSnap.exists()) {
+      await set(ref(Firebase.db, `chats/${chatId}`), {
+        id: chatId,
+        members: {
+          [user.uid]: true,
+          [partnerUid]: true,
+        },
+        createdAt: Date.now(),
+      });
+    }
+
+    const userChat: UserChat = {
+      chatId,
+      partnerUid,
+      updatedAt: Date.now(),
+    };
+
+    const partnerUserChat: UserChat = {
+      chatId,
+      partnerUid: user.uid,
+      updatedAt: Date.now(),
+    };
+
+    await set(ref(Firebase.db, `userChats/${user.uid}/${chatId}`), userChat);
+    await set(ref(Firebase.db, `userChats/${partnerUid}/${chatId}`), partnerUserChat);
+  };
+
+  // ✉️ Send message
+  const sendMessage = async (chatId: string, message: Message) => {
+    if (!user) return;
+
+    const msgRef = push(ref(Firebase.db, `messages/${chatId}`));
+
+    await set(msgRef, {
+      ...message,
+      senderUid: user.uid,
+      timestamp: serverTimestamp(),
     });
 
-    setChats(updatedChats);
-    setSettings(updatedSettings);
-    saveChatsMutation.mutate(updatedChats);
-    saveSettingsMutation.mutate(updatedSettings);
+    // update both users' chat previews
+    const chatRef = ref(Firebase.db, `chats/${chatId}`);
+    await set(ref(Firebase.db, `chats/${chatId}/lastMessage`), {
+      text: message.filteredText,
+      timestamp: Date.now(),
+    });
+
+    const chat = chatId.split('_');
+    const uid1 = chat[0];
+    const uid2 = chat[1];
+
+    await set(ref(Firebase.db, `userChats/${uid1}/${chatId}/lastMessage`), message.filteredText);
+    await set(ref(Firebase.db, `userChats/${uid2}/${chatId}/lastMessage`), message.filteredText);
   };
 
-  const updateSettings = (newSettings: Partial<Settings>) => {
-    const updated = { ...settings, ...newSettings };
-    setSettings(updated);
-    saveSettingsMutation.mutate(updated);
-  };
-
-  const completeOnboarding = () => {
-    setOnboardingDone(true);
-    completeOnboardingMutation.mutate();
-  };
-
-  const canSendMessage = (): { allowed: boolean; reason?: string } => {
-    if (settings.quietMode) {
-      return { allowed: false, reason: 'מצב שקט פעיל' };
-    }
-
-    const today = new Date().toDateString();
-    const count = settings.lastResetDate === today ? settings.currentMessageCount : 0;
-
-    if (count >= settings.maxMessagesPerDay) {
-      return { allowed: false, reason: `הגעת למגבלת ${settings.maxMessagesPerDay} הודעות ליום` };
-    }
-
-    return { allowed: true };
-  };
-
-  const getChatById = (chatId: string): Chat | undefined => {
-    return chats.find(chat => chat.id === chatId);
-  };
+  const getChatById = (chatId: string) =>
+    chats.find((c) => c.chatId === chatId);
 
   return {
+    user,
+    loggedin,
+    loading,
+    setUser,
+    setLoggedIn,
     chats,
-    settings,
-    onboardingDone,
-    createChat,
     joinChat,
-    addMessage,
-    updateSettings,
-    completeOnboarding,
-    canSendMessage,
+    sendMessage,
     getChatById,
-    isLoading: chatsQuery.isLoading || settingsQuery.isLoading || onboardingQuery.isLoading,
+    settings,
   };
 });

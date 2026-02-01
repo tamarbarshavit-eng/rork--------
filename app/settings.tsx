@@ -1,24 +1,72 @@
 import { Bell, BellOff, MessageSquare, Info } from 'lucide-react-native';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '@/contexts/AppContext';
 import { theme } from '@/constants/theme';
+import { signOut } from 'firebase/auth';
+import Firebase from '@/firebase';
+import { useEffect } from 'react';
+import { useRouter } from 'expo-router';
 
 const MESSAGE_LIMIT_OPTIONS = [5, 10, 15, 20];
 
 export default function SettingsScreen() {
-  const { settings, updateSettings } = useApp();
+  const { settings , loading,user, loggedin} = useApp();
+  const router = useRouter()
 
   const handleQuietModeToggle = (value: boolean) => {
-    updateSettings({ quietMode: value });
+   // updateSettings({ quietMode: value });
   };
 
   const handleMessageLimitChange = (limit: number) => {
-    updateSettings({ maxMessagesPerDay: limit });
+    //updateSettings({ maxMessagesPerDay: limit });
   };
+const handleLogout = () => {
+   if (Platform.OS === 'web') {
+    const ok = window.confirm('האם את/ה בטוח/ה שברצונך להתנתק?');
+    if (ok) {
+      signOut(Firebase.auth);
+    }
+    return;
+  }
+  Alert.alert(
+    'התנתקות מהחשבון',
+    'האם את/ה בטוח/ה שברצונך להתנתק?',
+    [
+      {
+        text: 'ביטול',
+        style: 'cancel',
+      },
+      {
+        text: 'התנתק',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await signOut(Firebase.auth);
+          } catch (e) {}
+        },
+      },
+    ],
+    { cancelable: true }
+  );
+};
+
+  useEffect(() => {
+    if (!loading) {
+      if (!user) {
+        router.replace('/login');
+      }
+    }
+  }, [loggedin, user, loading, router]);
+
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
+      <View style={styles.logoutSection}>
+      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+        <Text style={styles.logoutText}>התנתק מהחשבון</Text>
+      </TouchableOpacity>
+    </View>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>מצב שקט</Text>
@@ -109,6 +157,25 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  logoutSection: {
+  marginTop: theme.spacing.xl,
+},
+
+logoutButton: {
+    backgroundColor: '#FFEAEA',
+    borderRadius: theme.borderRadius.md,
+    padding: theme.spacing.md,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFCCCC',
+  },
+
+  logoutText: {
+    fontSize: theme.fontSize.md,
+    fontWeight: 'bold' as const,
+    color: '#D11A2A',
+  },
+
   container: {
     flex: 1,
     backgroundColor: theme.colors.background,

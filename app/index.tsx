@@ -6,17 +6,17 @@ import { theme } from '@/constants/theme';
 
 export default function IndexScreen() {
   const router = useRouter();
-  const { onboardingDone, isLoading } = useApp();
+  const { loggedin,loading,user } = useApp();
 
   useEffect(() => {
-    if (!isLoading) {
-      if (onboardingDone) {
+    if (!loading) {
+      if (user) {
         router.replace('/chats');
       } else {
-        router.replace('/onboarding');
+        router.replace('/login');
       }
     }
-  }, [onboardingDone, isLoading, router]);
+  }, [loggedin, user, loading, router]);
 
   return (
     <View style={styles.container}>
